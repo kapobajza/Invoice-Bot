@@ -1,23 +1,43 @@
 import 'package:query/src/query_options.dart';
+import 'package:query/src/util.dart';
 
 import 'query.dart';
 
 class QueryCache {
   final Map<String, Query> _cache = {};
 
-  Query<T> get<T>(String key) {
+  Query<T>? get<T>(QueryKey key) {
+    final hashedKey = hashKey(key);
+    return _cache[hashedKey] as Query<T>?;
+  }
+
+  Query<T> getOrCreate<T>(
+    QueryKey key,
+    QueryFunction<T> queryFn, [
+    DefaultQueryOptions? options = const DefaultQueryOptions.defaulted(),
+  ]) {
+    final hashedKey = hashKey(key);
     return _cache.putIfAbsent(
-      key,
-      () => Query<T>(cache: this, options: QueryOptions()),
+      hashedKey,
+      () => Query<T>(
+        cache: this,
+        options: QueryOptions(
+          queryKey: key,
+          queryFn: queryFn,
+          optionals: options,
+        ),
+      ),
     ) as Query<T>;
   }
 
-  void set<T>(String key, Query<T> query) {
-    _cache[key] = query;
+  void set<T>(QueryKey key, Query<T> query) {
+    final hashedKey = hashKey(key);
+    _cache[hashedKey] = query;
   }
 
-  void remove(String key) {
-    _cache.remove(key);
+  void remove(QueryKey key) {
+    final hashedKey = hashKey(key);
+    _cache.remove(hashedKey);
   }
 
   void clear() {
