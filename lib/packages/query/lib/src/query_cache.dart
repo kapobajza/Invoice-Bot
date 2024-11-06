@@ -14,7 +14,7 @@ class QueryCache {
   Query<T> getOrCreate<T>(
     QueryKey key,
     QueryFunction<T> queryFn, [
-    DefaultQueryOptions? options = const DefaultQueryOptions.defaulted(),
+    DefaultQueryOptions<T>? options = const DefaultQueryOptions.defaulted(),
   ]) {
     final hashedKey = hashKey(key);
     return _cache.putIfAbsent(
@@ -37,10 +37,23 @@ class QueryCache {
 
   void remove(QueryKey key) {
     final hashedKey = hashKey(key);
-    _cache.remove(hashedKey);
+    final query = _cache[hashedKey];
+
+    if (query != null) {
+      query.cancel(silent: true);
+      _cache.remove(hashedKey);
+    }
   }
 
   void clear() {
     _cache.clear();
+  }
+
+  List<Query<T>> findAll<T>(QueryFilters filters) {
+    return _cache.values.whereType<Query<T>>().where(
+      (query) {
+        return hashKey(query.options.queryKey) == hashKey(filters.queryKey);
+      },
+    ).toList();
   }
 }

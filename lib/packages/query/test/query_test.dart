@@ -5,145 +5,160 @@ import 'package:query/query.dart';
 import 'query_mock.mocks.dart';
 
 void main() {
-  test('query should be updated and saved to cache', () async {
+  final QueryClient queryClient = QueryClient();
+  final List<Future<void> Function()> subscribers = [];
+
+  tearDown(() async {
+    queryClient.queryCache.clear();
+
+    for (final subscriber in subscribers) {
+      await subscriber();
+    }
+  });
+
+  QueryObserver<T> createObserver<T>(QueryOptions<T> queryOptions) {
+    final observer = QueryObserver(
+      queryClient: queryClient,
+      queryOptions: queryOptions,
+    );
+    subscribers.add(observer.stream.listen((_) {}).cancel);
+
+    return observer;
+  }
+
+  test('should update and save the query to cache', () async {
     const fnData = 1;
-    final cache = QueryCache();
     QueryKey key = ['key', 1, 2];
     queryFn() async => fnData;
 
-    final query = Query(
-      cache: cache,
-      options: QueryOptions(
-        queryKey: key,
-        queryFn: queryFn,
-      ),
+    expect(queryClient.queryCache.get(key), equals(null));
+
+    createObserver(
+      QueryOptions(queryKey: key, queryFn: queryFn),
     );
+    final query = queryClient.queryCache.get(key);
 
-    expect(query.state.status, equals(QueryStatus.idle));
-    expect(cache.get(key), equals(null));
-
-    final observer = QueryObserver(query: query);
-
-    expect(observer.query.state.status, equals(QueryStatus.loading));
+    expect(query?.state.status, equals(QueryStatus.pending));
 
     await Future.microtask(() {});
 
-    expect(observer.query.state.status, equals(QueryStatus.success));
-    expect(observer.query.state.data, equals(fnData));
-    expect(cache.get(key), equals(query));
+    expect(query?.state.status, equals(QueryStatus.success));
+    expect(query?.state.data, equals(fnData));
+    expect(queryClient.queryCache.get(key), equals(query));
   });
 
-  test('if cache data exists, query should not be fetched', () async {
+  test('should not fetch query if it isn\'t stale', () async {
     const fnData = 1;
-    final cache = QueryCache();
     QueryKey key = ['key', 1, 2];
     final queryFn = MockQueryFunction();
     when(queryFn()).thenAnswer((_) async => fnData);
 
-    final query = Query(
-      cache: cache,
-      options: QueryOptions(
-        queryKey: key,
-        queryFn: queryFn.call,
-      ),
+    expect(queryClient.queryCache.get(key), equals(null));
+
+    createObserver(
+      QueryOptions(queryKey: key, queryFn: queryFn.call),
     );
+    await Future.microtask(() {});
 
-    expect(query.state.status, equals(QueryStatus.idle));
-    expect(cache.get(key), equals(null));
-
-    QueryObserver(query: query);
+    createObserver(
+      QueryOptions(queryKey: key, queryFn: queryFn.call),
+    );
     await Future.microtask(() {});
 
     verify(queryFn()).called(1);
-
-    QueryObserver(query: query);
-    await Future.microtask(() {});
-
-    verifyNever(queryFn());
   });
 
   test(
-    'if multiple observers are called in quick succession, only one query should be fetched',
+    'should fetch query only once, if multiple observers are called in quick succession',
     () async {
       const fnData = 1;
-      final cache = QueryCache();
       QueryKey key = ['key', 1, 2];
       final queryFn = MockQueryFunction();
       when(queryFn()).thenAnswer((_) async => fnData);
 
-      final query = Query(
-        cache: cache,
-        options: QueryOptions(
-          queryKey: key,
-          queryFn: queryFn.call,
-        ),
+      createObserver(
+        QueryOptions(queryKey: key, queryFn: queryFn.call),
       );
-
-      QueryObserver(query: query);
-      QueryObserver(query: query);
+      createObserver(
+        QueryOptions(queryKey: key, queryFn: queryFn.call),
+      );
+      await Future.microtask(() {});
 
       verify(queryFn()).called(1);
     },
   );
 
   test(
-    'if query is stale, only background fetching should be present',
+    'should fetch query again when stale time runs out',
     () async {
       const fnData = 1;
-      final cache = QueryCache();
-      QueryKey key = ['key', 1, 2];
-      queryFn() async => await Future.value(fnData);
-
-      final query = Query(
-        cache: cache,
-        options: QueryOptions(
-          queryKey: key,
-          queryFn: queryFn,
-        ),
-      );
-
-      QueryObserver(query: query);
-
-      expect(query.state.isLoading, true);
-      expect(query.state.isFetching, true);
-      await Future.microtask(() {});
-
-      QueryObserver(query: query);
-
-      expect(query.state.isLoading, false);
-      expect(query.state.isFetching, true);
-    },
-  );
-
-  test(
-    'when stale time runs out, query should be fetched again',
-    () async {
-      const fnData = 1;
-      final cache = QueryCache();
       QueryKey key = ['key', 1, 2];
       final queryFn = MockQueryFunction();
       when(queryFn()).thenAnswer((_) async => fnData);
 
-      final query = Query(
-        cache: cache,
-        options: QueryOptions(
+      createObserver(
+        QueryOptions(
           queryKey: key,
           queryFn: queryFn.call,
-          optionals: const DefaultQueryOptions(
+          optionals: const DefaultQueryOptions<int>(
             staleTime: Duration(milliseconds: 50),
           ),
         ),
       );
-
-      QueryObserver(query: query);
       await Future.microtask(() {});
 
       await Future.delayed(const Duration(milliseconds: 51));
 
-      QueryObserver(query: query);
+      final observer = createObserver(
+        QueryOptions(queryKey: key, queryFn: queryFn.call),
+      );
+      expect(observer.currentResult.isFetching, true);
+      expect(observer.currentResult.isLoading, false);
       await Future.microtask(() {});
 
       verify(queryFn()).called(2);
+      expect(observer.currentResult.isFetching, false);
+      expect(observer.currentResult.isLoading, false);
     },
   );
+
+  test('should retry fetching query on error', () async {
+    QueryKey key = ['key', 1, 2];
+    String error = 'error_message';
+    const int retryCount = 3;
+    int callCount = 0;
+    const int fnData = 1;
+
+    final queryFn = MockQueryFunction();
+    when(queryFn()).thenAnswer((_) async {
+      callCount++;
+
+      if (callCount <= retryCount) {
+        throw Exception(error);
+      }
+
+      return fnData;
+    });
+
+    int? returnedData;
+
+    try {
+      returnedData = await queryClient.fetchQuery(
+        options: QueryOptions(
+          queryKey: key,
+          queryFn: queryFn.call,
+          optionals: const DefaultQueryOptions<int>(
+            retry: retryCount,
+            retryDelay: 10,
+          ),
+        ),
+      );
+    } catch (err) {
+      expect(err, isA<Exception>());
+      expect(err.toString(), 'Exception: $error');
+    }
+
+    verify(queryFn()).called(retryCount + 1);
+    expect(returnedData, fnData);
+  });
 }

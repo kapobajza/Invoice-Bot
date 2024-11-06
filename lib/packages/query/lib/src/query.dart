@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:query/src/query_observer.dart';
 
@@ -7,9 +8,18 @@ import 'query_cache.dart';
 
 enum QueryStatus {
   idle,
-  loading,
+  pending,
   success,
   error,
+}
+
+enum FetchStatus { idle, fetching, paused }
+
+class FetchOptions {
+  final dynamic meta;
+  final bool cancelRefetch;
+
+  FetchOptions({this.meta, this.cancelRefetch = false});
 }
 
 typedef QueryKey = List<dynamic>;
@@ -20,17 +30,17 @@ class QueryState<T> {
   final QueryStatus status;
   final DateTime? dataUpdatedAt;
   final bool isInvalidated;
-  final bool isFetching;
-  final bool isLoading;
+  final FetchStatus fetchStatus;
+  final dynamic fetchMeta;
 
   QueryState({
     this.data,
     this.error,
     this.status = QueryStatus.idle,
     this.isInvalidated = false,
-    this.isFetching = false,
-    this.isLoading = false,
+    this.fetchStatus = FetchStatus.idle,
     this.dataUpdatedAt,
+    this.fetchMeta,
   });
 
   QueryState<T> copyWith({
@@ -41,6 +51,9 @@ class QueryState<T> {
     bool? isInvalidated,
     bool? isFetching,
     bool? isLoading,
+    FetchStatus? fetchStatus,
+    dynamic fetchMeta,
+    int? fetchFailureCount,
   }) {
     return QueryState<T>(
       data: data ?? this.data,
@@ -48,8 +61,8 @@ class QueryState<T> {
       status: status ?? this.status,
       dataUpdatedAt: dataUpdatedAt ?? this.dataUpdatedAt,
       isInvalidated: isInvalidated ?? this.isInvalidated,
-      isFetching: isFetching ?? this.isFetching,
-      isLoading: isLoading ?? this.isLoading,
+      fetchMeta: fetchMeta ?? this.fetchMeta,
+      fetchStatus: fetchStatus ?? this.fetchStatus,
     );
   }
 }
@@ -60,7 +73,8 @@ class Query<T> {
 
   QueryState<T> _state = QueryState<T>();
   final List<QueryObserver<T>> _observers = [];
-  Future<void>? _currentFetch;
+  Completer<T>? _currentFetch;
+  Timer? _retryTimer;
   Timer? _gcTimer;
 
   Query({
@@ -70,61 +84,144 @@ class Query<T> {
 
   QueryState<T> get state => _state;
 
-  Future<void> fetch() async {
-    if (_currentFetch != null) {
-      return _currentFetch;
-    }
-
-    _setState(_state.copyWith(status: QueryStatus.loading, isFetching: true));
-
-    _currentFetch = _fetchIfNeeded();
-
-    try {
-      await _currentFetch;
-    } finally {
-      _setState(_state.copyWith(isFetching: false, isLoading: false));
-      _currentFetch = null;
-      _scheduleGC();
-    }
-  }
-
-  Future<void> _fetchIfNeeded() async {
-    try {
-      Query<T>? cachedQuery = cache.get(options.queryKey);
-
-      if (cachedQuery != null && !isStale()) {
-        return _setState(_state.copyWith(
-          data: cachedQuery._state.data,
-          status: QueryStatus.success,
-          dataUpdatedAt: DateTime.now(),
-        ));
+  Future<T> fetch({FetchOptions? fetchOptions}) async {
+    if (state.fetchStatus != FetchStatus.idle) {
+      if (state.data != null && fetchOptions?.cancelRefetch == true) {
+        cancel(silent: true);
+      } else if (_currentFetch != null) {
+        return _currentFetch!.future;
       }
+    }
 
-      _setState(_state.copyWith(isLoading: cachedQuery?.state.data == null));
+    _currentFetch = Completer<T>();
 
-      final data = await options.queryFn();
+    Future<T> fetchFn() async {
+      final queryFnContext = QueryFunctionContext(
+        queryKey: options.queryKey,
+        meta: options.optionals?.meta,
+      );
+
+      try {
+        if (options.optionals?.persister != null) {
+          return await options.optionals!.persister!(
+            options.queryFn,
+            queryFnContext,
+            this,
+          );
+        } else {
+          return await options.queryFn();
+        }
+      } catch (error) {
+        if (error is Exception) rethrow;
+        throw Exception(error.toString());
+      }
+    }
+
+    final context = FetchContext<T>(
+      options: options,
+      queryKey: options.queryKey,
+      state: state,
+      fetchFn: fetchFn,
+    );
+
+    if (options.optionals?.behavior?.onFetch != null) {
+      options.optionals?.behavior?.onFetch!(context, this);
+    }
+
+    if (state.fetchStatus == FetchStatus.idle ||
+        state.fetchMeta != fetchOptions?.meta) {
+      _setState(_state.copyWith(
+        fetchStatus: FetchStatus.fetching,
+        fetchMeta: fetchOptions?.meta,
+        status: _state.data == null ? QueryStatus.pending : _state.status,
+        error: _state.data == null ? null : _state.error,
+      ));
+    }
+
+    try {
+      final data = await _retry(fetchFn);
 
       _setState(_state.copyWith(
         data: data,
-        status: QueryStatus.success,
         dataUpdatedAt: DateTime.now(),
+        error: null,
         isInvalidated: false,
+        status: QueryStatus.success,
+        fetchStatus: FetchStatus.idle,
       ));
-      cache.set(options.queryKey, this);
+      _scheduleGC();
+
+      _currentFetch?.complete(data);
+      return data;
     } catch (error) {
       _setState(_state.copyWith(
-        error: error,
         status: QueryStatus.error,
+        error: error,
       ));
+      _scheduleGC();
+      _currentFetch?.completeError(error);
+      rethrow;
+    } finally {
+      _currentFetch = null;
+    }
+  }
+
+  Future<T> _retry(Future<T> Function() fn) async {
+    final retry = DefaultQueryOptions.retryOrDefault(options.optionals?.retry);
+
+    for (int attempt = 0; attempt <= retry; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        if (attempt == retry) rethrow;
+        _setState(_state.copyWith(
+          fetchStatus: FetchStatus.fetching,
+          error: error,
+        ));
+        await Future.delayed(
+          Duration(
+            milliseconds: math
+                .min(
+                  1 * 1000 * math.pow(2, attempt),
+                  DefaultQueryOptions.retryDelayOrDefault(
+                    retryDelay: options.optionals?.retryDelay,
+                  ),
+                )
+                .toInt(),
+          ),
+        );
+      }
+    }
+    throw Exception('Retry failed');
+  }
+
+  void cancel({bool silent = false}) {
+    _retryTimer?.cancel();
+
+    if (!silent) {
+      _setState(_state.copyWith(fetchStatus: FetchStatus.idle));
     }
   }
 
   void addObserver(QueryObserver<T> observer) {
+    if (_observers.contains(observer)) {
+      return;
+    }
+
     _observers.add(observer);
+    _clearGCTimer();
   }
 
   void removeObserver(QueryObserver<T> observer) {
+    if (!_observers.contains(observer)) {
+      return;
+    }
+
     _observers.remove(observer);
+
+    if (_observers.isNotEmpty) {
+      _scheduleGC();
+    }
   }
 
   bool isStale() {
@@ -133,7 +230,7 @@ class Query<T> {
     }
 
     if (_observers.isNotEmpty) {
-      return _observers.any((observer) => observer.isStale());
+      return _observers.any((observer) => observer.isStale(this));
     }
 
     return _state.data == null;
@@ -154,9 +251,13 @@ class Query<T> {
     return expiresAt.isBefore(now);
   }
 
+  void invalidate() {
+    _setState(_state.copyWith(isInvalidated: true));
+  }
+
   void _notifyObservers() {
     for (final observer in _observers) {
-      observer.onQueryUpdated(this);
+      observer.onQueryUpdate(this);
     }
   }
 
@@ -172,7 +273,7 @@ class Query<T> {
 
     if (gcTime > Duration.zero) {
       _gcTimer = Timer(gcTime, () {
-        if (_observers.isEmpty && _state.status == QueryStatus.idle) {
+        if (_observers.isEmpty && _state.fetchStatus == FetchStatus.idle) {
           cache.remove(options.queryKey);
         }
       });

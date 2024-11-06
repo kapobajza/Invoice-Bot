@@ -1,0 +1,31 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "invoice_bot",
+      "request": "launch",
+      "type": "dart"
+    },
+    {
+      "name": "invoice_bot (profile mode)",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "profile"
+    },
+    {
+      "name": "invoice_bot (release mode)",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "release"
+    },
+    {
+      "name": "query",
+      "cwd": "lib/packages/query",
+      "request": "launch",
+      "type": "dart"
+    }
+  ]
+}
