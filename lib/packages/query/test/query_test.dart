@@ -9,7 +9,7 @@ void main() {
   final List<Future<void> Function()> subscribers = [];
 
   tearDown(() async {
-    queryClient.queryCache.clear();
+    queryClient.clear();
 
     for (final subscriber in subscribers) {
       await subscriber();
@@ -17,7 +17,7 @@ void main() {
   });
 
   QueryObserver<T> createObserver<T>(QueryOptions<T> queryOptions) {
-    final observer = QueryObserver(
+    final observer = QueryObserver<T>(
       queryClient: queryClient,
       queryOptions: queryOptions,
     );
@@ -161,4 +161,36 @@ void main() {
     verify(queryFn()).called(retryCount + 1);
     expect(returnedData, fnData);
   });
+
+  test(
+    'should show error when query fails',
+    () async {
+      QueryKey key = ['key', 1, 2];
+      const errorMessage = 'error_message';
+      final queryFn = MockQueryFunction();
+
+      when(queryFn()).thenThrow(Exception(errorMessage));
+
+      final observer = createObserver(
+        QueryOptions(
+          queryKey: key,
+          queryFn: () async {
+            throw Exception(errorMessage);
+          },
+          optionals: const DefaultQueryOptions(
+            retry: 0,
+          ),
+        ),
+      );
+
+      await expectLater(
+        observer.stream,
+        emits(predicate<QueryObserverResult>((result) {
+          expect(result.isError, true);
+          expect(result.error.toString(), 'Exception: $errorMessage');
+          return true;
+        })),
+      );
+    },
+  );
 }

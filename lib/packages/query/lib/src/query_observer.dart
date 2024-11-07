@@ -78,9 +78,10 @@ class QueryObserver<T> {
 
   QueryObserverResult<T> createResult(Query<T> query) {
     var newQueryState = query.state;
+    final shouldFetchOnMount = _shouldFetchOnMount(query);
+    final shouldFetchOptionally = _shouldFetchOptionally(query, _currentQuery);
 
-    if (_shouldFetchOnMount(query) ||
-        _shouldFetchOptionally(query, _currentQuery)) {
+    if (shouldFetchOnMount || shouldFetchOptionally) {
       newQueryState = query.state.copyWith(
         fetchStatus: FetchStatus.fetching,
         status:
@@ -133,10 +134,14 @@ class QueryObserver<T> {
     _currentQuery.removeObserver(this);
   }
 
-  Future<T> _executeFetch() {
+  Future<T?> _executeFetch() async {
     _updateQuery();
 
-    return _currentQuery.fetch();
+    try {
+      return await _currentQuery.fetch();
+    } catch (err) {
+      return null;
+    }
   }
 
   void _updateQuery() {
@@ -159,9 +164,14 @@ class QueryObserver<T> {
     }
   }
 
+  bool _shouldLoadOnMount(Query<T> query) {
+    return query.state.data == null && query.state.status != QueryStatus.error;
+  }
+
   bool _shouldFetchOnMount(Query<T> query) {
-    return query.state.data == null ||
-        (options?.refetchOnMount != false && isStale(query));
+    return _shouldLoadOnMount(query) ||
+        query.state.data != null &&
+            (options?.refetchOnMount != false && isStale(query));
   }
 
   bool _shouldFetchOptionally(Query<T> query, Query<T> prevQuery) {

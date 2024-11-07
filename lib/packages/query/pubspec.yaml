@@ -1,5 +1,5 @@
 name: query
-description: A package to create queries and cache them, inspired by Tanstack Query
+description: "A package to create queries and cache them, inspired by Tanstack Query"
 version: 1.0.0
 publish_to: 'none'
 

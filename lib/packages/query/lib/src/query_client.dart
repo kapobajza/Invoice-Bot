@@ -50,4 +50,8 @@ class QueryClient {
 
     await refetchQueries(filters: filters);
   }
+
+  clear() {
+    _queryCache.clear();
+  }
 }

@@ -159,7 +159,6 @@ class Query<T> {
         error: error,
       ));
       _scheduleGC();
-      _currentFetch?.completeError(error);
       rethrow;
     } finally {
       _currentFetch = null;
@@ -220,6 +219,7 @@ class Query<T> {
     _observers.remove(observer);
 
     if (_observers.isNotEmpty) {
+      cancel(silent: true);
       _scheduleGC();
     }
   }
@@ -255,6 +255,11 @@ class Query<T> {
     _setState(_state.copyWith(isInvalidated: true));
   }
 
+  void destroy() {
+    _clearGCTimer();
+    cancel(silent: true);
+  }
+
   void _notifyObservers() {
     for (final observer in _observers) {
       observer.onQueryUpdate(this);
@@ -271,13 +276,11 @@ class Query<T> {
     final gcTime =
         DefaultQueryOptions.gcTimeOrDefault(options.optionals?.gcTime);
 
-    if (gcTime > Duration.zero) {
-      _gcTimer = Timer(gcTime, () {
-        if (_observers.isEmpty && _state.fetchStatus == FetchStatus.idle) {
-          cache.remove(options.queryKey);
-        }
-      });
-    }
+    _gcTimer = Timer(gcTime, () {
+      if (_observers.isEmpty && _state.fetchStatus == FetchStatus.idle) {
+        cache.remove(options.queryKey);
+      }
+    });
   }
 
   void _clearGCTimer() {

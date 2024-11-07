@@ -40,12 +40,15 @@ class QueryCache {
     final query = _cache[hashedKey];
 
     if (query != null) {
-      query.cancel(silent: true);
+      query.destroy();
       _cache.remove(hashedKey);
     }
   }
 
   void clear() {
+    _cache.forEach((key, query) {
+      query.destroy();
+    });
     _cache.clear();
   }
 
