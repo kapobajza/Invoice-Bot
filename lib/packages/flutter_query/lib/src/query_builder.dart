@@ -24,11 +24,7 @@ class _QueryBuilderState<T> extends State<QueryBuilder<T>> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_isInitialized) {
-      final queryClient = QueryProvider.of(context).client;
-      _observer = QueryObserver(
-        queryClient: queryClient,
-        queryOptions: widget.queryOptions,
-      );
+      _initializeObserver();
       _isInitialized = true;
     }
   }
@@ -40,6 +36,23 @@ class _QueryBuilderState<T> extends State<QueryBuilder<T>> {
   }
 
   @override
+  void didUpdateWidget(covariant QueryBuilder<T> oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (widget.queryOptions != oldWidget.queryOptions) {
+      _initializeObserver();
+    }
+  }
+
+  void _initializeObserver() {
+    final queryClient = QueryProvider.of(context).client;
+    _observer = QueryObserver(
+      queryClient: queryClient,
+      queryOptions: widget.queryOptions,
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     if (!_isInitialized) {
       return Container();
@@ -48,6 +61,8 @@ class _QueryBuilderState<T> extends State<QueryBuilder<T>> {
     return StreamBuilder<QueryObserverResult<T>>(
       stream: _observer.stream,
       builder: (context, snapshot) {
+        _observer.updateResult();
+
         if (snapshot.hasError) {
           final errorResult = QueryObserverResult<T>(
             data: null,

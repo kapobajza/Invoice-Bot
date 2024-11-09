@@ -277,7 +277,7 @@ class Query<T> {
         DefaultQueryOptions.gcTimeOrDefault(options.optionals?.gcTime);
 
     _gcTimer = Timer(gcTime, () {
-      if (_observers.isEmpty && _state.fetchStatus == FetchStatus.idle) {
+      if (_observers.isNotEmpty && _state.fetchStatus == FetchStatus.idle) {
         cache.remove(options.queryKey);
       }
     });

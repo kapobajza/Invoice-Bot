@@ -24,6 +24,56 @@ class TestApp extends StatelessWidget {
   }
 }
 
+const QueryKey defaultQueryKey = ['key', 'of', 'mine'];
+
+class TestQueryBuilder extends StatelessWidget {
+  final DefaultQueryOptions? options;
+  final QueryKey? queryKey;
+  final QueryClient queryClient;
+  final QueryFunction? queryFn;
+
+  const TestQueryBuilder({
+    super.key,
+    this.options,
+    required this.queryClient,
+    this.queryKey = defaultQueryKey,
+    this.queryFn,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TestApp(
+      queryClient: queryClient,
+      child: QueryBuilder(
+        builder: (context, result) {
+          if (result.isError) {
+            return Text(result.error?.toString() ?? 'Error');
+          }
+
+          if (result.isLoading) {
+            return const Text("Loading...");
+          }
+
+          if (result.isFetching) {
+            return const Text("Fetching...");
+          }
+
+          return Text("Data: ${result.data}");
+        },
+        queryOptions: QueryOptions(
+          queryKey: queryKey ?? defaultQueryKey,
+          queryFn: queryFn ??
+              () async {
+                await Future.delayed(const Duration(seconds: 1));
+                return 1;
+              },
+          optionals: options,
+        ),
+      ),
+    );
+  }
+}
+
 void main() {
   final queryClient = QueryClient();
 
@@ -35,31 +85,7 @@ void main() {
         (WidgetTester tester) async {
           const fnData = 1;
 
-          final widget = TestApp(
-            queryClient: queryClient,
-            child: QueryBuilder(
-              builder: (context, result) {
-                if (result.isError) {
-                  return Text("Error: ${result.error}");
-                }
-
-                if (result.isLoading) {
-                  return const Text("Loading...");
-                }
-
-                return Text("Data: ${result.data}");
-              },
-              queryOptions: QueryOptions(
-                queryKey: ['key', 'of', 'mine'],
-                queryFn: () async {
-                  await Future.delayed(const Duration(seconds: 1));
-                  return Future.value(fnData);
-                },
-              ),
-            ),
-          );
-
-          await tester.pumpWidget(widget);
+          await tester.pumpWidget(TestQueryBuilder(queryClient: queryClient));
 
           expect(find.text("Loading..."), findsOneWidget);
 
@@ -74,40 +100,88 @@ void main() {
         (WidgetTester tester) async {
           const errorMessage = 'error_message';
 
-          final widget = TestApp(
-            queryClient: queryClient,
-            child: QueryBuilder(
-              builder: (context, result) {
-                if (result.isError) {
-                  return Text(result.error?.toString() ?? 'Error');
-                }
-
-                if (result.isLoading) {
-                  return const Text("Loading...");
-                }
-
-                return Text("Data: ${result.data}");
+          await tester.pumpWidget(
+            TestQueryBuilder(
+              queryClient: queryClient,
+              queryFn: () async {
+                await Future.delayed(const Duration(seconds: 1));
+                throw Exception(errorMessage);
               },
-              queryOptions: QueryOptions(
-                queryKey: ['key', 'of', 'mine'],
-                queryFn: () async {
-                  await Future.delayed(const Duration(seconds: 1));
-                  throw Exception(errorMessage);
-                },
-                optionals: const DefaultQueryOptions(
-                  retry: 0,
-                ),
+              options: const DefaultQueryOptions(
+                retry: 0,
               ),
             ),
           );
-
-          await tester.pumpWidget(widget);
 
           expect(find.text("Loading..."), findsOneWidget);
 
           await tester.pumpAndSettle(const Duration(seconds: 1));
 
           expect(find.text("Exception: $errorMessage"), findsOneWidget);
+        },
+      );
+
+      testWidgets(
+        'should refetch when query is stale',
+        (WidgetTester tester) async {
+          await tester.pumpWidget(
+            TestQueryBuilder(
+              queryClient: queryClient,
+            ),
+          );
+
+          expect(find.text("Loading..."), findsOneWidget);
+
+          await tester.pumpAndSettle(const Duration(seconds: 1));
+
+          expect(find.text("Data: 1"), findsOneWidget);
+
+          await tester.pumpWidget(
+            TestQueryBuilder(
+              queryClient: queryClient,
+              options: const DefaultQueryOptions(
+                staleTime: Duration(seconds: 0),
+              ),
+            ),
+          );
+
+          expect(find.text("Fetching..."), findsOneWidget);
+
+          await tester.pumpAndSettle(const Duration(seconds: 1));
+        },
+      );
+
+      testWidgets(
+        'should hard load when query is garbage collected',
+        (WidgetTester tester) async {
+          await tester.pumpWidget(
+            TestQueryBuilder(
+              queryClient: queryClient,
+              options: const DefaultQueryOptions(
+                gcTime: Duration(minutes: 5),
+              ),
+            ),
+          );
+
+          expect(find.text("Loading..."), findsOneWidget);
+
+          await tester.pumpAndSettle(const Duration(seconds: 1));
+
+          expect(find.text("Data: 1"), findsOneWidget);
+
+          await tester.pump(const Duration(minutes: 5));
+
+          await tester.pumpWidget(
+            TestQueryBuilder(
+              queryClient: queryClient,
+            ),
+          );
+
+          expect(find.text("Loading..."), findsOneWidget);
+
+          await tester.pumpAndSettle(const Duration(seconds: 1));
+
+          expect(find.text("Data: 1"), findsOneWidget);
         },
       );
     },

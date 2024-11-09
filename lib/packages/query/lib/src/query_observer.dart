@@ -101,7 +101,7 @@ class QueryObserver<T> {
   isStale(Query<T> query) {
     return query.isStaleByTime(
       DefaultQueryOptions.staleTimeOrDefault(
-        query.options.optionals?.staleTime,
+        queryOptions.optionals?.staleTime,
       ),
     );
   }
