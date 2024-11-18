@@ -1,0 +1,6 @@
+{
+  "@@locale": "en",
+  "emptyTemplates_appBarTitle": "Welcome",
+  "emptyTemplates_noTemplateDescription": "To get started, create a new template",
+  "emptyTemplates_newTemplate": "Create a new template"
+}
